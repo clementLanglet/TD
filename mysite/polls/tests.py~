@@ -1,0 +1,192 @@
+import datetime
+
+from django.utils import timezone
+from django.test import TestCase
+from django.urls import reverse
+
+from .models import Question
+
+
+class QuestionMethodTests(TestCase):
+
+   def test_was_published_recently_with_old_question(self):
+    """
+    was_published_recently() should return False for questions whose
+    pub_date is older than 1 day.
+    """
+    time = timezone.now() - datetime.timedelta(days=30)
+    old_question = Question(pub_date=time)
+    self.assertIs(old_question.was_published_recently(), False)
+
+   def test_was_published_recently_with_recent_question(self):
+    """
+    was_published_recently() should return True for questions whose
+    pub_date is within the last day.
+    """
+    time = timezone.now() - datetime.timedelta(hours=1)
+    recent_question = Question(pub_date=time)
+    self.assertIs(recent_question.was_published_recently(), True)
+
+def create_question(question_text, days):
+    """
+    Creates a question with the given `question_text` and published the
+    given number of `days` offset to now (negative for questions published
+    in the past, positive for questions that have yet to be published).
+    """
+    time = timezone.now() + datetime.timedelta(days=days)
+    return Question.objects.create(question_text=question_text, pub_date=time)
+
+
+class QuestionViewTests(TestCase):
+    def test_index_view_with_no_questions(self):
+        """
+        If no questions exist, an appropriate message should be displayed.
+        """
+        response = self.client.get(reverse('polls:index'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "No polls are available.")
+        self.assertQuerysetEqual(response.context['latest_question_list'], [])
+
+    def test_index_view_with_a_past_question(self):
+        """
+        Questions with a pub_date in the past should be displayed on the
+        index page.
+        """
+        create_question(question_text="Past question.", days=-30)
+        response = self.client.get(reverse('polls:index'))
+        self.assertQuerysetEqual(
+            response.context['latest_question_list'],
+            ['<Question: Past question.>']
+        )
+
+    def test_index_view_with_a_future_question(self):
+        """
+        Questions with a pub_date in the future should not be displayed on
+        the index page.
+        """
+        create_question(question_text="Future question.", days=30)
+        response = self.client.get(reverse('polls:index'))
+        self.assertContains(response, "No polls are available.")
+        self.assertQuerysetEqual(response.context['latest_question_list'], [])
+
+    def test_index_view_with_future_question_and_past_question(self):
+        """
+        Even if both past and future questions exist, only past questions
+        should be displayed.
+        """
+        create_question(question_text="Past question.", days=-30)
+        create_question(question_text="Future question.", days=30)
+        response = self.client.get(reverse('polls:index'))
+        self.assertQuerysetEqual(
+            response.context['latest_question_list'],
+            ['<Question: Past question.>']
+        )
+
+    def test_index_view_with_two_past_questions(self):
+        """
+        The questions index page may display multiple questions.
+        """
+        create_question(question_text="Past question 1.", days=-30)
+        create_question(question_text="Past question 2.", days=-5)
+        response = self.client.get(reverse('polls:index'))
+        self.assertQuerysetEqual(
+            response.context['latest_question_list'],
+            ['<Question: Past question 2.>', '<Question: Past question 1.>']
+        )
+
+Examinons plus en détails certaines de ces méthodes.
+
+Tout d’abord, la fonction raccourci create_question permet d’éviter de répéter plusieurs fois le processus de création de questions.
+
+test_index_view_with_no_questions ne crée aucune question, mais vérifie le message : « No polls are available. » et que la liste latest_question_list est vide. Notez que la classe django.test.TestCase fournit quelques méthodes d’assertion supplémentaires. Dans ces exemples, nous utilisons assertContains() et assertQuerysetEqual().
+
+Dans test_index_view_with_a_past_question, nous créons une question et vérifions qu’elle apparaît dans la liste.
+
+Dans test_index_view_with_a_future_question, nous créons une question avec pub_date dans le futur. La base de données est réinitialisée pour chaque méthode de test, ce qui explique que la première question n’est plus disponible et que la page d’index n’affiche plus de question.
+
+Et ainsi de suite. En pratique, nous utilisons les tests pour raconter des histoires d’interactions entre des saisies dans l’interface d’administration et d’un utilisateur parcourant le site, en contrôlant qu’à chaque état ou changement d’état du système, les résultats attendus apparaissent.
+Test de DetailView¶
+
+Le code marche bien maintenant. Cependant, même si les questions futures n’apparaissent pas sur la page index, les utilisateurs peuvent toujours y accéder s’ils savent ou devinent la bonne URL. Nous avons donc besoin d’une contrainte semblable dans DetailView :
+polls/views.py
+
+class DetailView(generic.DetailView):
+    ...
+    def get_queryset(self):
+        """
+        Excludes any questions that aren't published yet.
+        """
+        return Question.objects.filter(pub_date__lte=timezone.now())
+
+Et bien évidemment, nous ajoutons quelques tests, pour contrôler qu’une question dont pub_date est dans le passé peut être affichée, mais que si pub_date est dans le futur, elle ne le sera pas :
+polls/tests.py
+
+class QuestionIndexDetailTests(TestCase):
+    def test_detail_view_with_a_future_question(self):
+        """
+        The detail view of a question with a pub_date in the future should
+        return a 404 not found.
+        """
+        future_question = create_question(question_text='Future question.', days=5)
+        url = reverse('polls:detail', args=(future_question.id,))
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 404)
+
+    def test_detail_view_with_a_past_question(self):
+        """
+        The detail view of a question with a pub_date in the past should
+        display the question's text.
+        """
+        past_question = create_question(question_text='Past Question.', days=-5)
+        url = reverse('polls:detail', args=(past_question.id,))
+        response = self.client.get(url)
+        self.assertContains(response, past_question.question_text)
+
+Idées pour d’autres tests¶
+
+Nous devrions ajouter une méthode get_queryset similaire à ResultsView et créer une nouvelle classe de test pour cette vue. Elle sera très semblable à celle que nous venons de créer ; en fait, il y aura beaucoup de répétition.
+
+Nous pourrions aussi améliorer notre application d’autres manières, en ajoutant des tests au fur et à mesure. Par exemple, il est stupide de pouvoir publier des questions sur le site sans choix. Nos vues pourraient donc vérifier cela et exclure de telles questions. Les tests créeraient une question sans choix et testeraient qu’elle n’est pas publiée ; de même, il s’agirait de créer une question avec des choix et tester qu’elle est bien publiée.
+
+Peut-être que les utilisateurs connectés dans l’interface d’administration pourraient être autorisés à voir les questions non publiées, mais pas les visiteurs ordinaires. C’est toujours le même principe, tout ce qui est ajouté au logiciel devrait être accompagné par un test, que ce soit en écrivant d’abord le test puis en écrivant le code pour réussir le test, ou en travaillant d’abord sur la logique du code et en écrivant ensuite le test pour prouver le bon fonctionnement.
+
+À un certain stade, vous allez regarder vos tests et vous demander si votre code ne souffre pas de surabondance de tests, ce qui nous amène à :
+Pour les tests, abondance de biens ne nuit pas¶
+
+En apparence, les tests peuvent avoir l’air de croître sans limites. À ce rythme, il y aura bientôt plus de code dans nos tests que dans notre application ; et la répétition est laide, comparée à la brièveté élégante du reste du code.
+
+Ça n’a aucune importance. Laissez-les grandir. Dans la plupart des cas, vous pouvez écrire un test une fois et ne plus y penser. Il continuera à jouer son précieux rôle tout au long du développement de votre programme.
+
+Les tests devront parfois être mis à jour. Supposons que nous corrigeons nos vues pour que seules les questions avec choix soient publiées. Dans ce cas, de nombreux tests existants vont échouer, ce qui nous informera exactement au sujet des tests qui devront être mis à jour ; dans cette optique, on peut dire que les tests prennent soin d’eux-même.
+
+Au pire, au cours du développement, vous pouvez constater que certains tests deviennent redondants. Ce n’est même pas un problème. Dans les tests, la redondance est une bonne chose.
+
+Tant que vos tests sont logiquement disposés, ils ne deviendront pas ingérables. Quelques bons principes à garder en tête :
+
+    une classe de test séparée pour chaque modèle ou vue ;
+
+    une méthode de test séparée pour chaque ensemble de conditions que vous voulez tester ;
+
+    des noms de méthodes de test qui indiquent ce qu’elles font.
+
+Encore plus de tests¶
+
+Ce tutoriel ne fait qu’introduire à quelques concepts de base des tests. Il y a encore beaucoup plus à faire et d’autres outils très utiles à votre disposition pour effectuer des choses plus perfectionnées.
+
+Par exemple, bien que les tests présentés ici couvrent une partie de la logique interne d’un modèle et la manière dont les vues publient de l’information, vous pouvez utiliser un système basé sur de vrais navigateurs comme Selenium pour tester la façon dont le code HTML est vraiment rendu dans un navigateur. Ces outils permettent de tester plus que le comportement du seul code Django, mais aussi, par exemple, du code JavaScript. C’est assez impressionnant de voir les tests lancer un navigateur et commencer d’interagir avec votre site, comme si un être humain invisible le pilotait ! Django propose la classe LiveServerTestCase pour faciliter l’intégration avec des outils comme Selenium.
+
+Si votre application est complexe, il peut être utile de lancer automatiquement les tests lors de chaque commit dans l’optique d’une intégration continue), afin que le contrôle qualité puisse être lui-même automatisé, au moins partiellement.
+
+Une bonne façon de détecter des parties d’application non couvertes par les tests est de contrôler la couverture du code. Cela aide aussi à identifier du code fragile, ou même mort. Si vous ne pouvez pas tester un bout de code, cela signifie généralement que le code doit être réarrangé ou supprimé. Le taux de couverture aide à identifier le code inutilisé. Consultez Intégration avec coverage.py pour plus de détails.
+
+Django et les tests contient des informations complètes au sujet des tests.
+Et ensuite ?¶
+
+Pour des détails complets sur les tests, consultez Django et les tests.
+
+Lorsque vous êtes à l’aise avec les tests de vues Django, lisez la 6ème partie de ce tutoriel pour en savoir plus sur la gestion des fichiers statiques.
+Écriture de votre première application Django, 4ème partie
+Écriture de votre première application Django, 6ème partie
+Additional Information
+Search: 
+
